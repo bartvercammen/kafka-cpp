@@ -83,6 +83,8 @@ public:
 		return true;
 	}
 
+    unsigned long running_messages();
+
 
 private:
 	bool _connected;

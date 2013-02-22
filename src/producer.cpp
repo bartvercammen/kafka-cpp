@@ -158,4 +158,10 @@ producer::write()
                                                          boost::asio::placeholders::error )));
 }
 
+unsigned long
+producer::running_messages()
+{
+    return _outbox.size();
+}
+
 }
