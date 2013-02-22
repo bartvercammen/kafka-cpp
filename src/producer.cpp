@@ -33,6 +33,8 @@ producer::producer(boost::asio::io_service& io_service, const error_handler_func
 	, _resolver(io_service)
 	, _socket(io_service)
 	, _error_handler(error_handler)
+    , _strand(io_service)
+    , _outbox()
 {
 }
 
@@ -122,14 +124,38 @@ void producer::handle_connect(const boost::system::error_code& error_code, boost
 	}
 }
 
-void producer::handle_write_request(const boost::system::error_code& error_code, boost::asio::streambuf* buffer)
+void producer::handle_write_request(const boost::system::error_code& error_code)
 {
-	if (error_code)
-	{
+    _outbox.pop_front();
+
+	if (error_code)	{
 		fail_fast_error_handler(error_code);
 	}
 
-	delete buffer;
+    if(!_outbox.empty()) {
+        this->write();
+    }
+}
+
+void
+producer::write_impl(const std::string& message)
+{
+    _outbox.push_back(message);
+    if(_outbox.size() > 1) {
+        return;
+    }
+
+    this->write();
+}
+
+void
+producer::write()
+{
+    boost::asio::async_write( _socket,
+                              boost::asio::buffer( _outbox[0].data(), _outbox[0].size() ),
+                              _strand.wrap( boost::bind( &producer::handle_write_request,
+                                                         this,
+                                                         boost::asio::placeholders::error )));
 }
 
 }

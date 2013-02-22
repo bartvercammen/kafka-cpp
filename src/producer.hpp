@@ -25,7 +25,7 @@
 #define KAFKA_PRODUCER_HPP_
 
 #include <string>
-#include <vector>
+#include <deque>
 
 #include <boost/array.hpp>
 #include <boost/asio.hpp>
@@ -66,7 +66,6 @@ public:
 		return send(messages, topic, partition);
 	}
 
-	// TODO: replace this with a sending of the buffered data so encode is called prior to send this will allow for decoupling from the encoder
 	template <typename List>
 	bool send(const List& messages, const std::string& topic, const uint32_t partition = kafkaconnect::use_random_partition)
 	{
@@ -75,16 +74,11 @@ public:
 			return false;
 		}
 
-		// TODO: make this more efficient with memory allocations.
-		boost::asio::streambuf* buffer = new boost::asio::streambuf();
-		std::ostream stream(buffer);
-
-		kafkaconnect::encode(stream, topic, partition, messages);
-
-		boost::asio::async_write(
-			_socket, *buffer,
-			boost::bind(&producer::handle_write_request, this, boost::asio::placeholders::error, buffer)
-		);
+        std::stringstream stream;
+        kafkaconnect::encode(stream, topic, partition, messages);
+        _strand.post( boost::bind( &producer::write_impl,
+                                   this,
+                                   stream.str() ) );
 
 		return true;
 	}
@@ -93,13 +87,18 @@ public:
 private:
 	bool _connected;
 	bool _connecting;
-	boost::asio::ip::tcp::resolver _resolver;
-	boost::asio::ip::tcp::socket _socket;
-	error_handler_function _error_handler;
+	boost::asio::ip::tcp::resolver  _resolver;
+	boost::asio::ip::tcp::socket    _socket;
+	error_handler_function          _error_handler;
+    boost::asio::io_service::strand _strand;
+    std::deque<std::string>         _outbox;
+
+    void write_impl(const std::string& message);
+    void write();
 
 	void handle_resolve(const boost::system::error_code& error_code, boost::asio::ip::tcp::resolver::iterator endpoints);
 	void handle_connect(const boost::system::error_code& error_code, boost::asio::ip::tcp::resolver::iterator endpoints);
-	void handle_write_request(const boost::system::error_code& error_code, boost::asio::streambuf* buffer);
+	void handle_write_request(const boost::system::error_code& error_code);
 
 	/* Fail Fast Error Handler Braindump
 	 *
