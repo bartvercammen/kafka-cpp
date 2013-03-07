@@ -44,7 +44,13 @@ class producer
 public:
 	typedef boost::function<void(boost::system::error_code const&)> error_handler_function;
 
-	producer(boost::asio::io_service& io_service, const error_handler_function& error_handler = error_handler_function());
+	producer(boost::asio::io_service& io_service, 
+             unsigned int queue_memory_percentage, 
+             const error_handler_function& error_handler = error_handler_function());
+
+	producer(boost::asio::io_service& io_service, 
+             const error_handler_function& error_handler = error_handler_function());
+
 	~producer();
 
 	bool connect(const std::string& hostname, const uint16_t port);
@@ -76,6 +82,11 @@ public:
 
         std::stringstream stream;
         kafkaconnect::encode(stream, topic, partition, messages);
+
+        if(! hasMemoryLeft(stream.gcount())) {
+            return false;
+        }
+
         _strand.post( boost::bind( &producer::write_impl,
                                    this,
                                    stream.str() ) );
@@ -94,6 +105,9 @@ private:
 	error_handler_function          _error_handler;
     boost::asio::io_service::strand _strand;
     std::deque<std::string>         _outbox;
+    unsigned int                    _mem_treshhold;     // %
+    unsigned long                   _mem_bytes_usable;  // # bytes
+    unsigned long                   _mem_bytes_used;    // # bytes
 
     void write_impl(const std::string& message);
     void write();
@@ -101,6 +115,8 @@ private:
 	void handle_resolve(const boost::system::error_code& error_code, boost::asio::ip::tcp::resolver::iterator endpoints);
 	void handle_connect(const boost::system::error_code& error_code, boost::asio::ip::tcp::resolver::iterator endpoints);
 	void handle_write_request(const boost::system::error_code& error_code);
+    unsigned long getTotalSystemMemory() const;
+    bool hasMemoryLeft(unsigned int size) const;
 
 	/* Fail Fast Error Handler Braindump
 	 *

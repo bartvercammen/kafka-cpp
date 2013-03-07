@@ -22,10 +22,26 @@
  */
 
 #include <boost/lexical_cast.hpp>
+#include <sys/sysinfo.h>
 
 #include "producer.hpp"
 
 namespace kafkaconnect {
+
+producer::producer( boost::asio::io_service&        io_service, 
+                    unsigned int                    queue_memory_percentage,
+                    const error_handler_function&   error_handler)
+	: _connected(false)
+	, _connecting(false)
+	, _resolver(io_service)
+	, _socket(io_service)
+	, _error_handler(error_handler)
+    , _strand(io_service)
+    , _outbox()
+    , _mem_treshhold(queue_memory_percentage)
+    , _mem_bytes_usable(getTotalSystemMemory())
+    , _mem_bytes_used(0)
+{ }
 
 producer::producer(boost::asio::io_service& io_service, const error_handler_function& error_handler)
 	: _connected(false)
@@ -35,8 +51,10 @@ producer::producer(boost::asio::io_service& io_service, const error_handler_func
 	, _error_handler(error_handler)
     , _strand(io_service)
     , _outbox()
-{
-}
+    , _mem_treshhold(0)
+    , _mem_bytes_usable(0)
+    , _mem_bytes_used(0)
+{ }
 
 producer::~producer()
 {
@@ -126,6 +144,7 @@ void producer::handle_connect(const boost::system::error_code& error_code, boost
 
 void producer::handle_write_request(const boost::system::error_code& error_code)
 {
+    _mem_bytes_used -= _outbox.front().length();
     _outbox.pop_front();
 
 	if (error_code)	{
@@ -141,6 +160,8 @@ void
 producer::write_impl(const std::string& message)
 {
     _outbox.push_back(message);
+    _mem_bytes_used += message.length();
+
     if(_outbox.size() > 1) {
         return;
     }
@@ -164,4 +185,25 @@ producer::running_messages()
     return _outbox.size();
 }
 
+unsigned long 
+producer::getTotalSystemMemory() const
+{
+    struct sysinfo info;
+    sysinfo( &info );
+    return (unsigned long)info.totalram * (unsigned long)info.mem_unit;
 }
+
+bool
+producer::hasMemoryLeft(unsigned int size) const
+{
+/*
+    std::cout << "memory: used=" << _mem_bytes_used
+              << ", usable=" << _mem_bytes_usable
+              << ", treshold=" << _mem_treshhold
+              << " (=" << ((_mem_bytes_usable * _mem_treshhold) / 100) << " bytes)" << std::endl;
+*/
+    return ((_mem_bytes_usable * _mem_treshhold) / 100) > (_mem_bytes_used + size);
+}
+
+}
+
