@@ -202,6 +202,10 @@ producer::hasMemoryLeft(unsigned int size) const
               << ", treshold=" << _mem_treshhold
               << " (=" << ((_mem_bytes_usable * _mem_treshhold) / 100) << " bytes)" << std::endl;
 */
+    if(0 == _mem_treshhold) {
+        return true;
+    }
+
     return ((_mem_bytes_usable * _mem_treshhold) / 100) > (_mem_bytes_used + size);
 }
 
