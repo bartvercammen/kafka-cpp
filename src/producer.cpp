@@ -22,53 +22,60 @@
  */
 
 #include <boost/lexical_cast.hpp>
+#include <iostream>
 
 #include "producer.hpp"
 
 namespace kafkaconnect {
 
-producer::producer(boost::asio::io_service& io_service, const error_handler_function& error_handler)
+using std::endl;
+using std::cout;
+
+producer::producer()
 	: _connected(false)
-	, _connecting(false)
-	, _resolver(io_service)
-	, _socket(io_service)
-	, _error_handler(error_handler)
-    , _strand(io_service)
     , _outbox()
-{
-}
+    , _fd(0)
+{ }
 
 producer::~producer()
-{
-	close();
-}
+{ }
 
 bool producer::connect(const std::string& hostname, const uint16_t port)
 {
-	return connect(hostname, boost::lexical_cast<std::string>(port));
-}
+	_connected=false;
+    if ((_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1)
+    {
+    	cout << "can't connect to kafka server" << endl;
+    	return false;
+    }
 
-bool producer::connect(const std::string& hostname, const std::string& servicename)
-{
-	if (_connecting) { return false; }
-	_connecting = true;
+    cout << "Trying to connect to " << hostname << ":" << port << endl;;
+    struct sockaddr_in addr;
+    bzero(&addr, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    if (1 != (inet_pton(AF_INET, hostname.c_str(), &addr.sin_addr)))
+    {
+        cout << "illegal server address " << hostname << ":" << port << endl;;
+        return false;
+    }
 
-	boost::asio::ip::tcp::resolver::query query(hostname, servicename);
-	_resolver.async_resolve(
-		query,
-		boost::bind(
-			&producer::handle_resolve, this,
-			boost::asio::placeholders::error, boost::asio::placeholders::iterator
-		)
-	);
+    if (0 !=::connect(_fd, (struct sockaddr *)&addr, sizeof(addr)))
+    {
+        cout << "connect error to " << hostname << ":" << port << " error " << strerror(errno) << endl;;
+        return false;
+    }
+    
+    cout << "connected to " <<hostname << ":" <<port << endl;;
+    _connected=true;
+    return true;
 }
 
 bool producer::close()
 {
-	if (_connecting) { return false; }
-
 	_connected = false;
-	_socket.close();
+	::close(_fd);
+    _fd = 0;
 }
 
 bool producer::is_connected() const
@@ -76,92 +83,46 @@ bool producer::is_connected() const
 	return _connected;
 }
 
-bool producer::is_connecting() const
+//this method writes exactly n bytes to a socket
+ssize_t producer::_writen(int fd, const void *vptr, size_t n)
 {
-	return _connecting;
-}
+    size_t nleft;
+    ssize_t nwritten;
+    const char *ptr;
 
-void producer::handle_resolve(const boost::system::error_code& error_code, boost::asio::ip::tcp::resolver::iterator endpoints)
-{
-	if (!error_code)
-	{
-		boost::asio::ip::tcp::endpoint endpoint = *endpoints;
-		_socket.async_connect(
-			endpoint,
-			boost::bind(
-				&producer::handle_connect, this,
-				boost::asio::placeholders::error, ++endpoints
-			)
-		);
-	}
-	else
-	{
-		_connecting = false;
-		fail_fast_error_handler(error_code);
-	}
-}
-
-void producer::handle_connect(const boost::system::error_code& error_code, boost::asio::ip::tcp::resolver::iterator endpoints)
-{
-	if (!error_code)
-	{
-		// The connection was successful.
-		_connecting = false;
-		_connected = true;
-	}
-	else if (endpoints != boost::asio::ip::tcp::resolver::iterator())
-	{
-		// TODO: handle connection error (we might not need this as we have others though?)
-
-		// The connection failed, but we have more potential endpoints so throw it back to handle resolve
-		_socket.close();
-		handle_resolve(boost::system::error_code(), endpoints);
-	}
-	else
-	{
-		_connecting = false;
-		fail_fast_error_handler(error_code);
-	}
-}
-
-void producer::handle_write_request(const boost::system::error_code& error_code)
-{
-    _outbox.pop_front();
-
-	if (error_code)	{
-		fail_fast_error_handler(error_code);
-	}
-
-    if(!_outbox.empty()) {
-        this->write();
+    ptr = (char*)vptr;
+    nleft = n;
+    while (nleft > 0) {
+        if ( (nwritten = ::send(fd, ptr, nleft,MSG_NOSIGNAL)) <= 0) { // prevent SIGPIPE if socket is closed
+            if (nwritten < 0 && errno == EINTR)
+                nwritten = 0;   /* and call write() again */
+            else
+                return (-1);    /* error */
+        }
+        nleft -= nwritten;
+        ptr += nwritten;
     }
+    return (n);
 }
 
 void
-producer::write_impl(const std::string& message)
+producer::write_impl(const std::string& data)
 {
-    _outbox.push_back(message);
-    if(_outbox.size() > 1) {
-        return;
+	int n=_writen(_fd,data.c_str(),data.size());
+    if(n<=0)
+    {
+    	cout << "can't write to KAFKA server - error "<< strerror(errno) << endl;
+        // try to reconnect
+        _connected=false;
+        ::close(_fd);
+      // send data to kafka (is old data but just send it, do this only once )
+      if(_writen(_fd,data.c_str(),data.size())<=0) // just in case connection is closed again
+      {
+    	  cout << "can't write to KAFKA server - error "<< strerror(errno) << endl;
+    	  _connected=false;
+    	  ::close(_fd);
+      }
     }
-
-    this->write();
-}
-
-void
-producer::write()
-{
-    boost::asio::async_write( _socket,
-                              boost::asio::buffer( _outbox[0].data(), _outbox[0].size() ),
-                              _strand.wrap( boost::bind( &producer::handle_write_request,
-                                                         this,
-                                                         boost::asio::placeholders::error )));
-}
-
-unsigned long
-producer::running_messages()
-{
-    return _outbox.size();
 }
 
 }
